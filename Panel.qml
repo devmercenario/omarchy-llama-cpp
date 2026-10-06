@@ -6,6 +6,10 @@ import qs.Ui
 
 // llama.cpp dropdown: one row per configured model, click to start or stop.
 // Only one server runs at a time, so starting a model stops the current one.
+//
+// The panel is divided by hairlines: a header rule, one rule between rows, and
+// a footer rule above the config path. Rows carry no fill, so the switch and
+// the status dot are what communicate state.
 Panel {
   id: root
   moduleName: "devmercenario.llama-cpp"
@@ -28,6 +32,8 @@ Panel {
 
   readonly property color contentFg: bar ? bar.foreground : Color.foreground
   readonly property string contentFont: bar ? bar.fontFamily : Style.font.family
+  readonly property int rowHeight: Style.space(42)
+  readonly property int hairline: Math.max(1, Style.space(1))
 
   function open() {
     refresh()
@@ -82,12 +88,6 @@ Panel {
     if (cursor >= 0 && cursor < models.length) activate(models[cursor].id)
   }
 
-  function actionLabel(model) {
-    if (model.state === "running") return "stop"
-    if (model.state === "starting") return "starting…"
-    return "start"
-  }
-
   KeyboardPanel {
     id: panel
     anchorItem: root.anchorItem
@@ -95,7 +95,7 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(360))
+    contentWidth: panel.fittedContentWidth(Style.space(380))
     contentHeight: panel.fittedContentHeight(content.implicitHeight)
 
     PanelKeyCatcher {
@@ -110,28 +110,39 @@ Panel {
       Column {
         id: content
         width: parent.width
-        spacing: Style.spacing.md
+        spacing: Style.spacing.lg
 
-        Row {
+        // --- header: name, with the live state pinned to the right ---------
+        Item {
           width: parent.width
-          spacing: Style.spacing.sm
+          height: title.implicitHeight
 
           Text {
+            id: title
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
             text: "llama.cpp"
             color: root.contentFg
             font.family: root.contentFont
-            font.pixelSize: Style.font.subtitle
+            font.pixelSize: Style.font.title
             font.bold: true
           }
 
           Text {
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
             visible: root.runState !== "stopped"
             text: root.runState === "starting" ? "starting…" : "running"
             color: Util.alpha(root.contentFg, root.runState === "running" ? 0.9 : 0.6)
             font.family: root.contentFont
             font.pixelSize: Style.font.caption
-            anchors.verticalCenter: parent.verticalCenter
           }
+        }
+
+        Rectangle {
+          width: parent.width
+          height: root.hairline
+          color: Util.alpha(root.contentFg, 0.12)
         }
 
         Text {
@@ -143,83 +154,103 @@ Panel {
           font.pixelSize: Style.font.body
         }
 
-        Repeater {
-          model: root.models
+        // --- the models, one per row, divided by hairlines -----------------
+        Column {
+          width: parent.width
+          spacing: 0
 
-          delegate: Rectangle {
-            required property var modelData
-            required property int index
+          Repeater {
+            model: root.models
 
-            width: content.width
-            height: Style.spacing.popupRowHeight
-            radius: Style.space(6)
-            color: modelData.active
-              ? Color.menu.selectedBackground
-              : (index === root.cursor ? Util.alpha(root.contentFg, 0.06) : "transparent")
-            border.width: modelData.active ? 1 : 0
-            border.color: Util.alpha(root.contentFg, 0.25)
+            delegate: Rectangle {
+              required property var modelData
+              required property int index
 
-            Row {
-              anchors.fill: parent
-              anchors.leftMargin: Style.spacing.sm
-              anchors.rightMargin: Style.spacing.sm
-              spacing: Style.spacing.sm
+              width: content.width
+              height: root.rowHeight
+              color: "transparent"
+
+              Row {
+                anchors.fill: parent
+                spacing: Style.spacing.md
+
+                Rectangle {
+                  width: Style.space(8)
+                  height: width
+                  radius: width / 2
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: root.contentFg
+                  opacity: modelData.state === "running" ? 1.0
+                    : (modelData.state === "starting" ? 0.7 : 0.3)
+                }
+
+                Column {
+                  anchors.verticalCenter: parent.verticalCenter
+                  spacing: Style.spacing.xxs
+                  width: parent.width - Style.space(8) - modelToggle.width - Style.spacing.md * 2
+
+                  Text {
+                    width: parent.width
+                    text: modelData.name
+                    color: (modelData.active || index === root.cursor)
+                      ? root.contentFg
+                      : Util.alpha(root.contentFg, 0.88)
+                    font.family: root.contentFont
+                    font.pixelSize: Style.font.body
+                    font.bold: modelData.active
+                    elide: Text.ElideRight
+                  }
+
+                  Text {
+                    text: "port " + modelData.port
+                    color: Util.alpha(root.contentFg, 0.5)
+                    font.family: root.contentFont
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+
+                ToggleSwitch {
+                  id: modelToggle
+                  anchors.verticalCenter: parent.verticalCenter
+                  checked: modelData.active
+                  busy: root.busy
+                  interactive: false
+                  foreground: root.contentFg
+                  accent: Color.accent
+                }
+              }
 
               Rectangle {
-                width: Style.space(8)
-                height: width
-                radius: width / 2
-                anchors.verticalCenter: parent.verticalCenter
-                color: root.contentFg
-                opacity: modelData.state === "running" ? 1.0
-                  : (modelData.state === "starting" ? 0.7 : 0.3)
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: root.hairline
+                visible: index < root.models.length - 1
+                color: Util.alpha(root.contentFg, 0.12)
               }
 
-              Column {
-                anchors.verticalCenter: parent.verticalCenter
-                width: parent.width - Style.space(8) - actionText.width - Style.spacing.sm * 3
-
-                Text {
-                  width: parent.width
-                  text: modelData.name
-                  color: root.contentFg
-                  font.family: root.contentFont
-                  font.pixelSize: Style.font.body
-                  elide: Text.ElideRight
-                }
-
-                Text {
-                  text: "port " + modelData.port
-                  color: Util.alpha(root.contentFg, 0.5)
-                  font.family: root.contentFont
-                  font.pixelSize: Style.font.caption
-                }
+              MouseArea {
+                anchors.fill: parent
+                hoverEnabled: true
+                onClicked: root.activate(modelData.id)
+                onEntered: root.cursor = index
               }
-
-              Text {
-                id: actionText
-                anchors.verticalCenter: parent.verticalCenter
-                text: root.actionLabel(modelData)
-                color: Util.alpha(root.contentFg, modelData.state === "stopped" ? 0.6 : 0.95)
-                font.family: root.contentFont
-                font.pixelSize: Style.font.caption
-              }
-            }
-
-            MouseArea {
-              anchors.fill: parent
-              hoverEnabled: true
-              onClicked: root.activate(modelData.id)
-              onEntered: root.cursor = index
             }
           }
+        }
+
+        // --- footer: where the models come from ----------------------------
+        Rectangle {
+          width: parent.width
+          height: root.hairline
+          color: Util.alpha(root.contentFg, 0.12)
         }
 
         Text {
           width: parent.width
           text: root.configSource === "bundled"
             ? "No models.json yet — create one at " + root.userConfig
-            : root.configPath
+            : "config · " + root.configPath
           color: Util.alpha(root.contentFg, 0.45)
           font.family: root.contentFont
           font.pixelSize: Style.font.caption

@@ -157,8 +157,6 @@ BarWidget {
     bar: root.bar
     text: root.glyph
     iconComponent: root.glyph === "" ? llamaIcon : null
-    slotSize: Style.bar.statusSlot
-    fontSize: Style.font.caption
     opacity: root.busy ? 0.6
       : (root.serverState === "running" ? 1.0
         : (root.serverState === "starting" ? 0.75 : root.idleOpacity))

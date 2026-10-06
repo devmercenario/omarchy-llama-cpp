@@ -42,6 +42,7 @@ grep -q 'panelLoader' BarWidget.qml || fail "no panel loader"
 grep -q 'KeyboardPanel' Panel.qml || fail "panel does not use KeyboardPanel"
 grep -q 'PanelKeyCatcher' Panel.qml || fail "panel does not use PanelKeyCatcher"
 grep -q '"toggle", id' Panel.qml || fail "panel rows do not toggle a model"
+grep -q 'ToggleSwitch' Panel.qml || fail "panel rows do not use an on/off switch"
 grep -q 'Repeater' Panel.qml || fail "panel does not list models"
 
 python3 - <<'PY'
