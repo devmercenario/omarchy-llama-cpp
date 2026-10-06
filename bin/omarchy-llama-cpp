@@ -1,0 +1,392 @@
+#!/usr/bin/env bash
+# omarchy-llama-cpp — manage llama.cpp servers declared in a JSON registry,
+# for the Omarchy bar widget `devmercenario.llama-cpp`.
+#
+# Usage:
+#   omarchy-llama-cpp <list|status|start|stop|toggle|open|logs|config|init|validate> [model-id] [--json]
+#
+# Models live in:
+#   ${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-llama-cpp/models.json
+# When that file does not exist the bundled example
+# <plugin>/defaults/models.json is used instead, so the widget still works
+# before you configure anything.
+#
+# Exactly one server runs at a time (one GPU), so start always stops the
+# current model first. Runtime state lives in an owner-only directory under
+# $XDG_RUNTIME_DIR and never in a shared temporary path.
+
+set -u
+
+plugin_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+user_config="${OMARCHY_LLAMA_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-llama-cpp/models.json}"
+bundled_config="$plugin_dir/defaults/models.json"
+
+state_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/omarchy-llama-cpp"
+state_base="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-llama-cpp"
+pid_file="$state_dir/server.pid"
+pgid_file="$state_dir/server.pgid"
+id_file="$state_dir/server.id"
+bin_file="$state_dir/server.bin"
+host_file="$state_dir/server.host"
+port_file="$state_dir/server.port"
+
+verb=""
+model_id=""
+json=0
+
+while (( $# > 0 )); do
+  case "$1" in
+    --json) json=1; shift ;;
+    -h|--help) verb=help; shift ;;
+    -*) echo "omarchy-llama-cpp: unknown option: $1" >&2; exit 2 ;;
+    *)
+      if [[ -z $verb ]]; then verb=$1
+      elif [[ -z $model_id ]]; then model_id=$1
+      else echo "omarchy-llama-cpp: unexpected argument: $1" >&2; exit 2; fi
+      shift
+      ;;
+  esac
+done
+
+log() { printf 'omarchy-llama-cpp: %s\n' "$*" >&2; }
+
+require_jq() {
+  command -v jq >/dev/null 2>&1 || { log "error: jq is required"; exit 1; }
+}
+
+config_file() {
+  if [[ -f $user_config ]]; then printf '%s\n' "$user_config"
+  elif [[ -f $bundled_config ]]; then printf '%s\n' "$bundled_config"
+  else return 1; fi
+}
+
+config_source() {
+  [[ -f $user_config ]] && printf 'user\n' || printf 'bundled\n'
+}
+
+ensure_dirs() {
+  mkdir -p "$state_dir" "$state_base" 2>/dev/null || return 1
+  chmod 700 "$state_dir" "$state_base" 2>/dev/null || true
+}
+
+# --- model registry ---------------------------------------------------------
+
+model_json() {
+  local id=$1 cfg
+  cfg=$(config_file) || return 1
+  jq -e --arg id "$id" '.models[] | select(.id == $id)' "$cfg"
+}
+
+model_field() {
+  local id=$1 field=$2 cfg
+  cfg=$(config_file) || return 1
+  jq -r --arg id "$id" --arg f "$field" '.models[] | select(.id == $id) | (.[$f] // empty)' "$cfg" | head -n 1
+}
+
+# --- runtime state ----------------------------------------------------------
+
+read_state() {
+  local f="$state_dir/$1"
+  [[ -r $f ]] && { cat "$f"; printf '\n'; }
+}
+
+write_state() { printf '%s\n' "$2" > "$state_dir/$1"; }
+
+clear_state() { rm -f "$pid_file" "$pgid_file" "$id_file" "$bin_file" "$host_file" "$port_file"; }
+
+pid_alive() { [[ -n ${1:-} ]] && [[ -d /proc/$1 ]]; }
+
+# True when PID is a live, same-user process whose argv names the launcher
+# `bin` (e.g. `llama`). Guards against a recycled PID from a stale file.
+pid_is_ours() {
+  local pid=$1 bin=$2
+  pid_alive "$pid" || return 1
+  [[ "$(id -u)" == "$(stat -c %u "/proc/$pid" 2>/dev/null)" ]] || return 1
+  local -a args=() a
+  while IFS= read -r -d '' a; do args+=("$a"); done < "/proc/$pid/cmdline" 2>/dev/null || return 1
+  (( ${#args[@]} > 0 )) || return 1
+  for a in "${args[@]}"; do
+    [[ ${a##*/} == "$bin" ]] && return 0
+  done
+  return 1
+}
+
+port_open() {
+  local host=${1:-127.0.0.1} port=${2:-0}
+  [[ $port =~ ^[0-9]+$ ]] || return 1
+  (( port > 0 )) || return 1
+  [[ $host == "0.0.0.0" ]] && host=127.0.0.1
+  (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null || return 1
+  exec 3>&- 3<&- 2>/dev/null || true
+  return 0
+}
+
+# stopped | starting | running
+current_state() {
+  local pid host port
+  pid=$(read_state server.pid) || pid=""
+  if [[ -z $pid ]] || ! pid_alive "$pid"; then printf 'stopped\n'; return 0; fi
+  host=$(read_state server.host); port=$(read_state server.port)
+  # A model without a port is considered running as soon as its process is up.
+  if [[ ! $port =~ ^[0-9]+$ ]] || (( port == 0 )); then printf 'running\n'; return 0; fi
+  if port_open "${host:-127.0.0.1}" "$port"; then printf 'running\n'; else printf 'starting\n'; fi
+}
+
+# --- commands ---------------------------------------------------------------
+
+list_models() {
+  require_jq
+  local cfg st cur
+  cfg=$(config_file) || { log "no model config found (looked at $user_config and $bundled_config)"; return 1; }
+  jq -e . "$cfg" >/dev/null 2>&1 || { log "config is not valid JSON: $cfg"; return 1; }
+  st=$(current_state)
+  cur=$(read_state server.id) || cur=""
+  [[ $st == stopped ]] && cur=""
+
+  if (( json )); then
+    jq -c --arg cfg "$cfg" --arg src "$(config_source)" --arg st "$st" --arg cur "$cur" '
+      {config: $cfg, configSource: $src, state: $st,
+       current: (if $cur == "" then null else $cur end),
+       models: [ .models[] | {
+         id, name: (.name // .id), port: (.port // 0),
+         state: (if .id == $cur then $st else "stopped" end),
+         active: (.id == $cur and $st != "stopped")
+       } ]}' "$cfg"
+  else
+    jq -r --arg cur "$cur" --arg st "$st" '
+      .models[] | "\(if (.id == $cur and $st != "stopped") then "●" else "○" end) \(.id)\t\(.name // .id)\t\(.port // 0)"' "$cfg"
+  fi
+}
+
+status_cmd() {
+  require_jq
+  local st id pid host port name url cfg
+  st=$(current_state)
+  id=$(read_state server.id) || id=""
+  pid=$(read_state server.pid) || pid=""
+  host=$(read_state server.host); port=$(read_state server.port)
+  [[ -n $host ]] || host="127.0.0.1"
+  [[ -n $port ]] || port=0
+  if [[ $st == stopped ]]; then id=""; pid=""; fi
+
+  name="$id"
+  if [[ -n $id ]] && cfg=$(config_file 2>/dev/null); then
+    local resolved
+    resolved=$(jq -r --arg id "$id" '.models[] | select(.id == $id) | (.name // .id)' "$cfg" 2>/dev/null | head -n 1)
+    [[ -n $resolved ]] && name="$resolved"
+  fi
+
+  url=""
+  [[ $port =~ ^[0-9]+$ ]] && (( port > 0 )) && url="http://$host:$port"
+
+  if (( json )); then
+    jq -nc --arg st "$st" --arg id "$id" --arg name "$name" --arg host "$host" \
+      --arg url "$url" --argjson pid "${pid:-null}" --argjson port "${port:-0}" '
+      {state: $st,
+       id: (if $id == "" then null else $id end),
+       name: (if $id == "" then null else $name end),
+       pid: $pid, host: $host, port: $port,
+       url: (if $url == "" then null else $url end)}'
+  else
+    printf '%s %s%s\n' "$st" "$id" "${url:+$url}"
+  fi
+
+  [[ $st != stopped ]]
+}
+
+stop_server() {
+  local pid pgid bin
+  pid=$(read_state server.pid) || pid=""
+  if [[ -z $pid ]] || ! pid_alive "$pid"; then
+    clear_state
+    log "not running"
+    return 0
+  fi
+
+  bin=$(read_state server.bin); bin=${bin:-llama}
+  if ! pid_is_ours "$pid" "$bin"; then
+    log "warning: pid $pid is not a '$bin' process; clearing stale state"
+    clear_state
+    return 0
+  fi
+
+  pgid=$(read_state server.pgid) || pgid=""
+  [[ -n $pgid ]] || pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+
+  log "stopping (pid=$pid${pgid:+, pgid=$pgid})"
+  if [[ -n $pgid && $pgid =~ ^[0-9]+$ && $pgid != "$$" ]]; then
+    kill -TERM -- "-$pgid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  else
+    kill -TERM "$pid" 2>/dev/null || true
+  fi
+
+  local i
+  for i in $(seq 1 100); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    log "did not exit on SIGTERM; sending SIGKILL"
+    if [[ -n $pgid && $pgid =~ ^[0-9]+$ ]]; then
+      kill -KILL -- "-$pgid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+    else
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  fi
+
+  clear_state
+  return 0
+}
+
+start_model() {
+  require_jq
+  local id=$1
+  [[ -n $id ]] || { log "start needs a model id"; return 2; }
+
+  local m; m=$(model_json "$id") || { log "unknown model: $id"; return 1; }
+
+  local st cur
+  st=$(current_state)
+  cur=$(read_state server.id) || cur=""
+  if [[ $st != stopped ]]; then
+    if [[ $cur == "$id" ]]; then
+      log "already $st ($id)"
+      return 0
+    fi
+    log "stopping current model ($cur) before starting $id"
+    stop_server
+  fi
+
+  ensure_dirs || { log "error: cannot create state directory"; return 1; }
+
+  local host port bin log_file
+  host=$(jq -r '.host // "127.0.0.1"' <<<"$m")
+  port=$(jq -r '.port // 0' <<<"$m")
+
+  local -a cmd=()
+  while IFS= read -r line; do cmd+=("$line"); done < <(jq -r '.command[]' <<<"$m")
+  (( ${#cmd[@]} > 0 )) || { log "model '$id' has no command[]"; return 1; }
+
+  bin="${cmd[0]##*/}"
+  command -v "${cmd[0]}" >/dev/null 2>&1 || { log "error: '${cmd[0]}' not found in PATH"; return 127; }
+
+  # Per-model environment, exported so the detached child inherits it.
+  local pair
+  while IFS= read -r pair; do
+    [[ -n $pair ]] && export "$pair"
+  done < <(jq -r '.env // {} | to_entries[] | "\(.key)=\(.value)"' <<<"$m")
+
+  clear_state
+  write_state server.id "$id"
+  write_state server.bin "$bin"
+  write_state server.host "$host"
+  write_state server.port "$port"
+
+  log_file="$state_base/$id.log"
+  : > "$log_file"
+
+  # New session => its own process group, so stop can signal the whole tree.
+  # The child records its own PID (kept across exec) before becoming llama.
+  setsid --fork bash -c '
+    echo $$ > "$1"
+    echo $$ > "$2"
+    shift 2
+    exec "$@"
+  ' omarchy-llama-cpp "$pid_file" "$pgid_file" "${cmd[@]}" >>"$log_file" 2>&1 </dev/null &
+
+  local i pid=""
+  for i in $(seq 1 50); do
+    pid=$(read_state server.pid) || pid=""
+    [[ -n $pid ]] && break
+    sleep 0.1
+  done
+  log "starting '$id'${pid:+ (pid=$pid)} → http://$host:$port"
+  log "log: $log_file"
+  return 0
+}
+
+toggle_model() {
+  local id=$1 st cur
+  [[ -n $id ]] || { log "toggle needs a model id"; return 2; }
+  st=$(current_state)
+  cur=$(read_state server.id) || cur=""
+  if [[ $st != stopped && $cur == "$id" ]]; then
+    stop_server
+  else
+    start_model "$id"
+  fi
+}
+
+open_url() {
+  local id=${1:-} host port url
+  if [[ -z $id ]]; then
+    id=$(read_state server.id) || id=""
+    host=$(read_state server.host); port=$(read_state server.port)
+  fi
+  if [[ -n $id && -z ${host:-} ]]; then
+    host=$(model_field "$id" host); port=$(model_field "$id" port)
+  fi
+  [[ -n ${host:-} ]] || host="127.0.0.1"
+  [[ -n ${port:-} ]] || port=8080
+  url="http://$host:$port"
+  if command -v xdg-open >/dev/null 2>&1; then
+    ( xdg-open "$url" >/dev/null 2>&1 & )
+    log "opened $url"
+    return 0
+  fi
+  log "xdg-open not found; open $url manually"
+  return 1
+}
+
+logs_cmd() {
+  local id=${1:-}
+  [[ -n $id ]] || id=$(read_state server.id) || id=""
+  [[ -n $id ]] || { log "no model given and nothing running"; return 1; }
+  printf '%s\n' "$state_base/$id.log"
+}
+
+config_cmd() {
+  printf '%s\n' "$(config_file)" || true
+  printf 'source: %s\n' "$(config_source)" >&2
+}
+
+init_config() {
+  mkdir -p "$(dirname "$user_config")"
+  if [[ -f $user_config ]]; then
+    log "config already exists: $user_config"
+    return 0
+  fi
+  [[ -f $bundled_config ]] || { log "bundled example not found: $bundled_config"; return 1; }
+  cp "$bundled_config" "$user_config"
+  log "created $user_config"
+}
+
+validate_config() {
+  require_jq
+  local cfg; cfg=$(config_file) || { log "no config found"; return 1; }
+  jq -e . "$cfg" >/dev/null 2>&1 || { log "invalid JSON: $cfg"; return 1; }
+  jq -e '(.models | type) == "array" and (.models | length) > 0' "$cfg" >/dev/null \
+    || { log "invalid: .models must be a non-empty array"; return 1; }
+  jq -e 'all(.models[]; ((.id | type) == "string") and ((.command | type) == "array") and ((.command | length) > 0))' "$cfg" >/dev/null \
+    || { log "invalid: every model needs a string id and a non-empty command[]"; return 1; }
+  log "ok: $cfg"
+}
+
+usage() {
+  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+case "$verb" in
+  list|models) list_models ;;
+  status)      status_cmd ;;
+  start)       start_model "$model_id" ;;
+  stop)        stop_server ;;
+  toggle)      toggle_model "$model_id" ;;
+  open)        open_url "$model_id" ;;
+  logs)        logs_cmd "$model_id" ;;
+  config|path) config_cmd ;;
+  init)        init_config ;;
+  validate)    validate_config ;;
+  help|"")     usage; [[ -z $verb ]] && exit 2 || exit 0 ;;
+  *) echo "omarchy-llama-cpp: unknown command: $verb" >&2; usage >&2; exit 2 ;;
+esac

@@ -1,0 +1,8 @@
+# Runtime logs and state
+*.log
+
+# Local working notes (not part of the plugin)
+PLAN.md
+
+# OS cruft
+.DS_Store

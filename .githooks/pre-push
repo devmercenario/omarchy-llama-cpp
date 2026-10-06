@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Runs the marketplace-mirroring preflight before every push.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+exec bash "$root/tests/preflight.sh"

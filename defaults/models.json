@@ -1,0 +1,28 @@
+{
+  "models": [
+    {
+      "id": "qwen3.8-27b",
+      "name": "Qwen3.8 27B (UD-IQ4_XS)",
+      "host": "127.0.0.1",
+      "port": 8080,
+      "command": [
+        "llama", "serve",
+        "-hf", "unsloth/Qwen3.8-27B-GGUF:UD-IQ4_XS",
+        "--no-mmproj",
+        "--ctx-size", "24576",
+        "--n-gpu-layers", "99",
+        "--flash-attn", "on",
+        "--cache-type-k", "q8_0",
+        "--cache-type-v", "q8_0",
+        "--batch-size", "1024",
+        "--ubatch-size", "512",
+        "--threads", "12",
+        "--threads-batch", "16",
+        "--jinja",
+        "--cont-batching",
+        "--parallel", "1"
+      ],
+      "env": {}
+    }
+  ]
+}

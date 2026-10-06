@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Original llama silhouette for the llama.cpp bar toggle. White so the bar can
+  dim it by opacity while no server is running. Replace this file (or set the
+  `glyph` setting) if you prefer a different mark.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <g fill="#ffffff">
+    <rect x="8.0" y="2.4" width="1.9" height="4.4" rx="0.95" />
+    <rect x="14.1" y="2.4" width="1.9" height="4.4" rx="0.95" />
+    <path d="M7.6 6.1h8.8c0 3.4-.7 5.8-1.5 7.7-.5 1.3-1.1 2.2-1.4 3.5-.2.9-.3 1.8-.3 3h-2.4c0-1.2-.1-2.1-.3-3-.3-1.3-.9-2.2-1.4-3.5C8.3 11.9 7.6 9.5 7.6 6.1z" />
+  </g>
+</svg>
