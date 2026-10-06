@@ -19,6 +19,7 @@ Panel {
   property var models: []
   property string configPath: ""
   property string configSource: ""
+  property string userConfig: ""
   property string runState: "stopped"
   property string currentId: ""
   property bool loaded: false
@@ -54,6 +55,7 @@ Panel {
       models = s.models || []
       configPath = s.config || ""
       configSource = s.configSource || ""
+      userConfig = s.userConfig || ""
       runState = s.state || "stopped"
       currentId = s.current || ""
     } catch (e) {
@@ -216,7 +218,7 @@ Panel {
         Text {
           width: parent.width
           text: root.configSource === "bundled"
-            ? "Using the bundled example — run `omarchy-llama-cpp init` to copy it"
+            ? "No models.json yet — create one at " + root.userConfig
             : root.configPath
           color: Util.alpha(root.contentFg, 0.45)
           font.family: root.contentFont

@@ -41,6 +41,18 @@ omarchy plugin add https://github.com/devmercenario/omarchy-llama-cpp.git --enab
 3. `omarchy plugin enable devmercenario.llama-cpp`
 4. Optionally move the icon: `omarchy bar move devmercenario.llama-cpp --section right`
 
+### The helper CLI on your `PATH`
+
+The helper ships inside the plugin. Link it into `~/.local/bin` so the
+`omarchy-llama-cpp` examples below work:
+
+```sh
+ln -s ~/.config/omarchy/plugins/devmercenario.llama-cpp/bin/omarchy-llama-cpp ~/.local/bin/omarchy-llama-cpp
+```
+
+Without the symlink, call it by its full path
+(`~/.config/omarchy/plugins/devmercenario.llama-cpp/bin/omarchy-llama-cpp`).
+
 ## Configuration
 
 Models live in `~/.config/omarchy-llama-cpp/models.json`. Until that file
@@ -155,6 +167,7 @@ calls `toggle <id>` per row. All process handling lives in the helper:
 
 ```sh
 omarchy plugin remove devmercenario.llama-cpp --yes
+rm -f ~/.local/bin/omarchy-llama-cpp   # if you created the symlink
 ```
 
 Your `~/.config/omarchy-llama-cpp/models.json` is left untouched; delete it

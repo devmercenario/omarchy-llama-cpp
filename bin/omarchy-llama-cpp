@@ -144,8 +144,8 @@ list_models() {
   [[ $st == stopped ]] && cur=""
 
   if (( json )); then
-    jq -c --arg cfg "$cfg" --arg src "$(config_source)" --arg st "$st" --arg cur "$cur" '
-      {config: $cfg, configSource: $src, state: $st,
+    jq -c --arg cfg "$cfg" --arg src "$(config_source)" --arg user "$user_config" --arg st "$st" --arg cur "$cur" '
+      {config: $cfg, configSource: $src, userConfig: $user, state: $st,
        current: (if $cur == "" then null else $cur end),
        models: [ .models[] | {
          id, name: (.name // .id), port: (.port // 0),
