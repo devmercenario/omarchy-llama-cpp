@@ -43,6 +43,47 @@ omarchy-llama-cpp/
 - **The panel is disposable.** All behaviour lives in the helper, so a widget
   reload (or a second monitor) cannot corrupt state.
 
+## Releasing a resource another process holds
+
+A model that needs the whole GPU can conflict with a background app that also
+holds VRAM. The `onStart` and `onExit` hooks exist for exactly that: `onStart`
+runs in the helper before the server is launched, `onExit` runs in the server's
+process when it exits or is signalled. Both are lists of commands.
+
+On this machine the `voxtype` dictation daemon holds ~1.5 GB, which is enough to
+push the 27B model into a partial offload. The user config mirrors what
+`~/.config/bash/llm.sh` does:
+
+```json
+{
+  "id": "qwen3.8-27b",
+  "name": "Qwen3.8 27B (UD-IQ4_XS)",
+  "host": "127.0.0.1",
+  "port": 8080,
+  "command": [
+    "llama", "serve",
+    "-hf", "unsloth/Qwen3.8-27B-GGUF:UD-IQ4_XS",
+    "--no-mmproj",
+    "--ctx-size", "32768",
+    "--n-gpu-layers", "99",
+    "--flash-attn", "on",
+    "--cache-type-k", "q8_0",
+    "--cache-type-v", "q8_0",
+    "--jinja"
+  ],
+  "onStart": [
+    ["systemctl", "--user", "stop", "voxtype"],
+    ["sleep", "3"]
+  ],
+  "onExit": [
+    ["systemctl", "--user", "start", "voxtype"]
+  ]
+}
+```
+
+The `sleep 3` gives the driver time to actually release the freed VRAM before
+llama.cpp asks for it.
+
 ## Testing
 
 ```sh

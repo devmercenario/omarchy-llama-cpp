@@ -30,6 +30,7 @@ bin_file="$state_dir/server.bin"
 host_file="$state_dir/server.host"
 port_file="$state_dir/server.port"
 exit_file="$state_dir/server.exit"
+onexit_file="$state_dir/server.onexit"
 
 verb=""
 model_id=""
@@ -93,7 +94,7 @@ read_state() {
 
 write_state() { printf '%s\n' "$2" > "$state_dir/$1"; }
 
-clear_state() { rm -f "$pid_file" "$pgid_file" "$id_file" "$bin_file" "$host_file" "$port_file" "$exit_file"; }
+clear_state() { rm -f "$pid_file" "$pgid_file" "$id_file" "$bin_file" "$host_file" "$port_file" "$exit_file" "$onexit_file"; }
 
 pid_alive() { [[ -n ${1:-} ]] && [[ -d /proc/$1 ]]; }
 
@@ -122,11 +123,15 @@ port_open() {
   return 0
 }
 
-# 0 = healthy, 1 = up but not ready, 2 = cannot tell (no curl, or not HTTP)
+# 0 = healthy, 1 = up but not ready, 2 = cannot tell (not HTTP)
 http_health() {
-  local host=$1 port=$2 code
-  command -v curl >/dev/null 2>&1 || return 2
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://$host:$port/health" 2>/dev/null || true)
+  local host=$1 port=$2 line code
+  exec 3<>"/dev/tcp/$host/$port" 2>/dev/null || return 2
+  printf 'GET /health HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n' "$host" >&3
+  IFS= read -r -t 3 line <&3 || { exec 3>&- 3<&- 2>/dev/null; return 2; }
+  exec 3>&- 3<&- 2>/dev/null || true
+  code=${line#* }
+  code=${code%% *}
   [[ $code =~ ^[0-9]+$ ]] || return 2
   # 5xx means the server is up but still loading (llama.cpp reports 503 while
   # the model loads); anything 2xx-4xx means it is answering requests.
@@ -336,23 +341,50 @@ start_model() {
   log_file="$state_base/$id.log"
   : > "$log_file"
 
+  # Optional onStart hooks run first, still in the foreground, so a resource
+  # another process holds can be released before the model needs it.
+  local hook
+  while IFS= read -r hook; do
+    [[ -n $hook ]] || continue
+    log "onStart: $hook"
+    bash -c "$hook" >>"$log_file" 2>&1 || true
+  done < <(jq -r '.onStart[]? | @sh' <<<"$m")
+
+  # onExit hooks are handed to the child, which runs them when the server
+  # exits or is signalled — so the released resource is restored either way.
+  if jq -e '(.onExit | type) == "array" and (.onExit | length) > 0' <<<"$m" >/dev/null 2>&1; then
+    jq -r '.onExit[] | @sh' <<<"$m" > "$onexit_file"
+  else
+    rm -f "$onexit_file"
+  fi
+
   # New session => its own process group, so stop can signal the whole tree.
-  # The child records its own PID (kept across exec) and, when the server
-  # exits, its exit code, so a failed start (bad flags, no VRAM) is reported
-  # instead of silently reverting to "stopped".
+  # The child records its own PID, runs the onExit hooks when the server ends,
+  # and records the exit code, so a failed start is reported instead of
+  # silently reverting to "stopped".
   setsid --fork bash -c '
-    echo $$ > "$1"
-    echo $$ > "$2"
-    exit_file="$3"
-    shift 3
+    pid_file=$1; pgid_file=$2; exit_file=$3; onexit=$4
+    shift 4
+    echo $$ > "$pid_file"
+    echo $$ > "$pgid_file"
+    run_onexit() {
+      [[ -r $onexit ]] || return 0
+      local line
+      while IFS= read -r line; do
+        [[ -n $line ]] && bash -c "$line" >/dev/null 2>&1 || true
+      done < "$onexit"
+      rm -f "$onexit"
+    }
+    trap "run_onexit; exit 143" TERM INT
     "$@"
     rc=$?
+    run_onexit
     printf "%s\n" "$rc" > "$exit_file" 2>/dev/null || true
     exit "$rc"
-  ' omarchy-llama-cpp "$pid_file" "$pgid_file" "$exit_file" "${cmd[@]}" >>"$log_file" 2>&1 </dev/null &
+  ' omarchy-llama-cpp "$pid_file" "$pgid_file" "$exit_file" "$onexit_file" "${cmd[@]}" >>"$log_file" 2>&1 </dev/null &
 
   local i pid="" rc=""
-  for i in $(seq 1 50); do
+  for i in $(seq 1 300); do
     pid=$(read_state server.pid) || pid=""
     rc=$(read_state server.exit) || rc=""
     if [[ -n $rc ]]; then

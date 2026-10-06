@@ -23,7 +23,6 @@ Declare your models once, then pick one from the bar and start or stop it.
 | `jq` | Reads and validates the model registry | Required. |
 | `llama` (or `llama-server`) | The server binary | Must be on `PATH`. |
 | `ss` (iproute2) | Detects the server's process | Present on Arch Linux by default. |
-| `curl` (optional) | Tells "loading" from "ready" via `/health` | Without it, an open port counts as ready. |
 | `setsid` (util-linux) | Starts the server in its own session | Present on Arch Linux by default. |
 | `xdg-open` (optional) | Opens the web UI on right click | Skip if you never use right click. |
 
@@ -96,6 +95,13 @@ Then edit the file. Every model is one entry under `models`:
 | `host` | string | Address used for the health check and the web UI. Default `127.0.0.1`. |
 | `port` | integer | HTTP port. `0` or omitted means "no port check". |
 | `env` | object | Extra environment variables for the process. Optional. |
+| `onStart` | string[][] | Commands run before the server starts. Optional. |
+| `onExit` | string[][] | Commands run after the server exits or is stopped. Optional. |
+
+When a model needs a resource that another process holds, `onStart` releases
+it and `onExit` restores it. Each hook is a list of commands, so a model can
+free the resource, wait, then start. See
+[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for a worked example.
 
 The registry is plain JSON and is read fresh on every action, so you can edit
 it and reopen the dropdown — no restart needed.
