@@ -29,6 +29,7 @@ id_file="$state_dir/server.id"
 bin_file="$state_dir/server.bin"
 host_file="$state_dir/server.host"
 port_file="$state_dir/server.port"
+exit_file="$state_dir/server.exit"
 
 verb=""
 model_id=""
@@ -92,7 +93,7 @@ read_state() {
 
 write_state() { printf '%s\n' "$2" > "$state_dir/$1"; }
 
-clear_state() { rm -f "$pid_file" "$pgid_file" "$id_file" "$bin_file" "$host_file" "$port_file"; }
+clear_state() { rm -f "$pid_file" "$pgid_file" "$id_file" "$bin_file" "$host_file" "$port_file" "$exit_file"; }
 
 pid_alive() { [[ -n ${1:-} ]] && [[ -d /proc/$1 ]]; }
 
@@ -132,39 +133,65 @@ current_state() {
   if port_open "${host:-127.0.0.1}" "$port"; then printf 'running\n'; else printf 'starting\n'; fi
 }
 
+# Last meaningful line of a model's log, for surfacing a failed start.
+error_for_log() {
+  local log=$1 line=""
+  [[ -r $log ]] || return 1
+  line=$(grep -aiE 'out of memory|cudamalloc|failed to allocate|no space|not enough' "$log" 2>/dev/null | tail -n 1)
+  [[ -n $line ]] || line=$(grep -aiE 'error|failed|cannot|unable|exiting' "$log" 2>/dev/null | tail -n 1)
+  [[ -n $line ]] || line=$(grep -av '^[[:space:]]*$' "$log" 2>/dev/null | tail -n 1)
+  [[ -n $line ]] || return 1
+  # Drop the leading log timestamp and collapse runs of spaces.
+  line=$(printf '%s' "$line" | sed -E 's/^[0-9]+([.][0-9]+)+[[:space:]]+//; s/[[:space:]]+/ /g')
+  printf '%s\n' "${line:0:160}"
+}
+
 # --- commands ---------------------------------------------------------------
 
 list_models() {
   require_jq
-  local cfg st cur
+  local cfg st cur lastid exitc err
   cfg=$(config_file) || { log "no model config found (looked at $user_config and $bundled_config)"; return 1; }
   jq -e . "$cfg" >/dev/null 2>&1 || { log "config is not valid JSON: $cfg"; return 1; }
   st=$(current_state)
-  cur=$(read_state server.id) || cur=""
+  lastid=$(read_state server.id) || lastid=""
+  exitc=$(read_state server.exit) || exitc=""
+  err=""
+  if [[ -n $lastid && -n $exitc && $exitc != "0" ]]; then
+    err=$(error_for_log "$state_base/$lastid.log" || true)
+  fi
+  cur=$lastid
   [[ $st == stopped ]] && cur=""
 
   if (( json )); then
-    jq -c --arg cfg "$cfg" --arg src "$(config_source)" --arg user "$user_config" --arg st "$st" --arg cur "$cur" '
+    jq -c --arg cfg "$cfg" --arg src "$(config_source)" --arg user "$user_config" \
+      --arg st "$st" --arg cur "$cur" --arg lastid "$lastid" --arg exitc "$exitc" --arg err "$err" '
       {config: $cfg, configSource: $src, userConfig: $user, state: $st,
        current: (if $cur == "" then null else $cur end),
        models: [ .models[] | {
          id, name: (.name // .id), port: (.port // 0),
          state: (if .id == $cur then $st else "stopped" end),
-         active: (.id == $cur and $st != "stopped")
+         active: (.id == $cur and $st != "stopped"),
+         failed: (.id == $lastid and $st == "stopped" and ($exitc | length) > 0 and $exitc != "0"),
+         error: (if (.id == $lastid and $st == "stopped" and ($exitc | length) > 0 and $exitc != "0") then $err else "" end)
        } ]}' "$cfg"
   else
-    jq -r --arg cur "$cur" --arg st "$st" '
-      .models[] | "\(if (.id == $cur and $st != "stopped") then "●" else "○" end) \(.id)\t\(.name // .id)\t\(.port // 0)"' "$cfg"
+    jq -r --arg cur "$cur" --arg st "$st" --arg lastid "$lastid" --arg exitc "$exitc" '
+      .models[] | "\(if (.id == $cur and $st != "stopped") then "●" elif (.id == $lastid and $st == "stopped" and $exitc != "0") then "✖" else "○" end) \(.id)\t\(.name // .id)\t\(.port // 0)"' "$cfg"
   fi
 }
 
 status_cmd() {
   require_jq
-  local st id pid host port name url cfg
+  local st id pid host port name url cfg lastid exitc err
   st=$(current_state)
   id=$(read_state server.id) || id=""
   pid=$(read_state server.pid) || pid=""
   host=$(read_state server.host); port=$(read_state server.port)
+  lastid=$id
+  exitc=$(read_state server.exit) || exitc=""
+  err=""
+  [[ -n $lastid && -n $exitc && $exitc != "0" ]] && err=$(error_for_log "$state_base/$lastid.log" || true)
   [[ -n $host ]] || host="127.0.0.1"
   [[ -n $port ]] || port=0
   if [[ $st == stopped ]]; then id=""; pid=""; fi
@@ -181,12 +208,16 @@ status_cmd() {
 
   if (( json )); then
     jq -nc --arg st "$st" --arg id "$id" --arg name "$name" --arg host "$host" \
-      --arg url "$url" --argjson pid "${pid:-null}" --argjson port "${port:-0}" '
+      --arg url "$url" --arg lastid "$lastid" --arg exitc "$exitc" --arg err "$err" \
+      --argjson pid "${pid:-null}" --argjson port "${port:-0}" '
       {state: $st,
        id: (if $id == "" then null else $id end),
        name: (if $id == "" then null else $name end),
        pid: $pid, host: $host, port: $port,
-       url: (if $url == "" then null else $url end)}'
+       url: (if $url == "" then null else $url end),
+       lastId: (if $lastid == "" then null else $lastid end),
+       lastExit: (if ($exitc | test("^-?[0-9]+$")) then ($exitc | tonumber) else null end),
+       error: (if ($st == "stopped" and ($exitc | length) > 0 and $exitc != "0") then $err else null end)}'
   else
     printf '%s %s%s\n' "$st" "$id" "${url:+$url}"
   fi
@@ -286,18 +317,30 @@ start_model() {
   : > "$log_file"
 
   # New session => its own process group, so stop can signal the whole tree.
-  # The child records its own PID (kept across exec) before becoming llama.
+  # The child records its own PID (kept across exec) and, when the server
+  # exits, its exit code, so a failed start (bad flags, no VRAM) is reported
+  # instead of silently reverting to "stopped".
   setsid --fork bash -c '
     echo $$ > "$1"
     echo $$ > "$2"
-    shift 2
-    exec "$@"
-  ' omarchy-llama-cpp "$pid_file" "$pgid_file" "${cmd[@]}" >>"$log_file" 2>&1 </dev/null &
+    exit_file="$3"
+    shift 3
+    "$@"
+    rc=$?
+    printf "%s\n" "$rc" > "$exit_file" 2>/dev/null || true
+    exit "$rc"
+  ' omarchy-llama-cpp "$pid_file" "$pgid_file" "$exit_file" "${cmd[@]}" >>"$log_file" 2>&1 </dev/null &
 
-  local i pid=""
+  local i pid="" rc=""
   for i in $(seq 1 50); do
     pid=$(read_state server.pid) || pid=""
-    [[ -n $pid ]] && break
+    rc=$(read_state server.exit) || rc=""
+    if [[ -n $rc ]]; then
+      log "error: '$id' exited with code $rc"
+      error_for_log "$log_file" >&2 || true
+      return 1
+    fi
+    if [[ -n $pid ]] && port_open "$host" "$port"; then break; fi
     sleep 0.1
   done
   log "starting '$id'${pid:+ (pid=$pid)} → http://$host:$port"

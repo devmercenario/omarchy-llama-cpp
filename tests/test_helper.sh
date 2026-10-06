@@ -43,12 +43,20 @@ with socketserver.TCPServer((host, port), http.server.SimpleHTTPRequestHandler) 
 EOF
 chmod +x "$tmp/llama"
 
-jq -n --arg bin "$tmp/llama" --argjson pa "$port_a" --argjson pb "$port_b" '{
+cat > "$tmp/broken" <<'EOF'
+#!/usr/bin/env bash
+echo "boom: cannot allocate memory" >&2
+exit 1
+EOF
+chmod +x "$tmp/broken"
+
+jq -n --arg bin "$tmp/llama" --arg broken "$tmp/broken" --argjson pa "$port_a" --argjson pb "$port_b" '{
   models: [
     { id: "alpha", name: "Alpha", host: "127.0.0.1", port: $pa,
       command: [$bin, "serve", "--port", ($pa|tostring)] },
     { id: "bravo", name: "Bravo", host: "127.0.0.1", port: $pb,
-      command: [$bin, "serve", "--port", ($pb|tostring)] }
+      command: [$bin, "serve", "--port", ($pb|tostring)] },
+    { id: "broken", name: "Broken", command: [$broken] }
   ]
 }' > "$tmp/models.json"
 
@@ -67,7 +75,7 @@ wait_port() {
 json="$(h list --json)"
 echo "$json" | jq -e . >/dev/null || fail "list --json is not valid JSON: $json"
 [[ "$(echo "$json" | jq -r '.configSource')" == "user" ]] || fail "configSource should be user"
-[[ "$(echo "$json" | jq -r '.models | length')" == "2" ]] || fail "expected 2 models: $json"
+[[ "$(echo "$json" | jq -r '.models | length')" == "3" ]] || fail "expected 3 models: $json"
 [[ "$(echo "$json" | jq -r '.state')" == "stopped" ]] || fail "expected stopped: $json"
 
 # Nothing running yet.
@@ -114,5 +122,24 @@ sleep 0.4
 
 # Validation.
 h validate >/dev/null 2>&1 || fail "validate rejected the generated config"
+
+# A model whose command dies must be reported, not silently forgotten.
+if h start broken >/dev/null 2>&1; then fail "start broken should report the failure"; fi
+sleep 0.4
+json="$(h list --json)"
+[[ "$(echo "$json" | jq -r '.models[] | select(.id=="broken") | .failed')" == "true" ]] \
+  || fail "broken should be marked failed: $json"
+[[ -n "$(echo "$json" | jq -r '.models[] | select(.id=="broken") | .error')" ]] \
+  || fail "broken should expose an error line: $json"
+[[ "$(h status --json | jq -r '.lastExit')" == "1" ]] || fail "status should report lastExit=1"
+
+# A clean stop must clear the failure, not leave it behind.
+h toggle alpha >/dev/null 2>&1 || true
+wait_port "$port_a" || fail "alpha never came back up"
+h stop >/dev/null || fail "stop failed"
+sleep 0.3
+json="$(h list --json)"
+[[ "$(echo "$json" | jq -r '.models[] | select(.id=="alpha") | .failed')" == "false" ]] \
+  || fail "a clean stop must not look like a failure: $json"
 
 echo "helper OK (ports $port_a, $port_b)"

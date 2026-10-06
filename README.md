@@ -162,6 +162,9 @@ calls `toggle <id>` per row. All process handling lives in the helper:
   `SIGKILL`.
 - The server log for each model is kept at
   `$XDG_STATE_HOME/omarchy-llama-cpp/<id>.log`.
+- If a start fails, the dropdown marks that model with a red dot and shows the
+  last error line from its log, so a model that cannot load (bad flags, no
+  free VRAM) says so instead of silently reverting to stopped.
 
 ## Removal
 

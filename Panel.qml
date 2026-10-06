@@ -179,8 +179,9 @@ Panel {
                   height: width
                   radius: width / 2
                   anchors.verticalCenter: parent.verticalCenter
-                  color: root.contentFg
-                  opacity: modelData.state === "running" ? 1.0
+                  color: modelData.failed ? Color.urgent : root.contentFg
+                  opacity: modelData.failed ? 1.0
+                    : modelData.state === "running" ? 1.0
                     : (modelData.state === "starting" ? 0.7 : 0.3)
                 }
 
@@ -202,10 +203,16 @@ Panel {
                   }
 
                   Text {
-                    text: "port " + modelData.port
-                    color: Util.alpha(root.contentFg, 0.5)
+                    width: parent.width
+                    text: (modelData.failed && modelData.error !== "")
+                      ? modelData.error
+                      : "port " + modelData.port
+                    color: modelData.failed
+                      ? Util.alpha(Color.urgent, 0.9)
+                      : Util.alpha(root.contentFg, 0.5)
                     font.family: root.contentFont
                     font.pixelSize: Style.font.caption
+                    elide: Text.ElideRight
                   }
                 }
 
@@ -258,6 +265,15 @@ Panel {
         }
       }
     }
+  }
+
+  Timer {
+    // Keep the panel live: a start that fails a few seconds in must surface
+    // without the user reopening the dropdown.
+    interval: 1500
+    running: root.opened
+    repeat: true
+    onTriggered: root.refresh()
   }
 
   Process {
