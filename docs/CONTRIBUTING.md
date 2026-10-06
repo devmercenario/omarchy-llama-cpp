@@ -21,7 +21,7 @@ omarchy-llama-cpp/
 ├── manifest.json             Plugin manifest (id devmercenario.llama-cpp)
 ├── BarWidget.qml             Bar icon; polls state, opens the dropdown
 ├── Panel.qml                 The dropdown of configured models
-├── assets/llama.svg          Original icon
+├── assets/llama.svg          Official llama.cpp logo (white, dimmed when idle)
 ├── defaults/models.json      Bundled example registry
 ├── bin/omarchy-llama-cpp     Registry + process helper
 ├── tests/                    Suites, preflight, vendored baseline scanner

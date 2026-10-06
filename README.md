@@ -175,9 +175,11 @@ manually if you no longer need it.
 
 ## Icon
 
-`assets/llama.svg` is an original llama silhouette, not the official
-llama.cpp logo. Replace the file, or set the `glyph` setting, if you prefer a
-different mark.
+`assets/llama.svg` is the **official llama.cpp logo**, used to identify the
+llama.cpp service this plugin controls. The llama.cpp name and logo belong to
+the llama.cpp project; this plugin is an independent community project and is
+not affiliated with or endorsed by it. Set the `glyph` setting if you prefer a
+Nerd Font glyph.
 
 ## License
 
