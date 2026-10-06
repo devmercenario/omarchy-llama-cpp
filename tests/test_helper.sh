@@ -10,6 +10,10 @@ command -v python3 >/dev/null 2>&1 || { echo "note: python3 missing; skipping he
 command -v jq >/dev/null 2>&1 || { echo "note: jq missing; skipping helper tests"; exit 0; }
 
 tmp="$(mktemp -d)"
+# Isolate runtime state and logs so the suite never touches a real server.
+export XDG_RUNTIME_DIR="$tmp/runtime"
+export XDG_STATE_HOME="$tmp/state"
+mkdir -p "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME"
 port_a=$(( 40000 + RANDOM % 10000 ))
 port_b=$(( port_a + 1 ))
 export OMARCHY_LLAMA_CONFIG="$tmp/models.json"

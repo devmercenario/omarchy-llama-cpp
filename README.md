@@ -23,6 +23,7 @@ Declare your models once, then pick one from the bar and start or stop it.
 | `jq` | Reads and validates the model registry | Required. |
 | `llama` (or `llama-server`) | The server binary | Must be on `PATH`. |
 | `ss` (iproute2) | Detects the server's process | Present on Arch Linux by default. |
+| `curl` (optional) | Tells "loading" from "ready" via `/health` | Without it, an open port counts as ready. |
 | `setsid` (util-linux) | Starts the server in its own session | Present on Arch Linux by default. |
 | `xdg-open` (optional) | Opens the web UI on right click | Skip if you never use right click. |
 

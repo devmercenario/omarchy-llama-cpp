@@ -122,15 +122,35 @@ port_open() {
   return 0
 }
 
+# 0 = healthy, 1 = up but not ready, 2 = cannot tell (no curl, or not HTTP)
+http_health() {
+  local host=$1 port=$2 code
+  command -v curl >/dev/null 2>&1 || return 2
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://$host:$port/health" 2>/dev/null || true)
+  [[ $code =~ ^[0-9]+$ ]] || return 2
+  # 5xx means the server is up but still loading (llama.cpp reports 503 while
+  # the model loads); anything 2xx-4xx means it is answering requests.
+  (( code >= 200 && code < 500 )) && return 0
+  return 1
+}
+
 # stopped | starting | running
 current_state() {
   local pid host port
   pid=$(read_state server.pid) || pid=""
   if [[ -z $pid ]] || ! pid_alive "$pid"; then printf 'stopped\n'; return 0; fi
   host=$(read_state server.host); port=$(read_state server.port)
+  [[ -n $host ]] || host="127.0.0.1"
   # A model without a port is considered running as soon as its process is up.
   if [[ ! $port =~ ^[0-9]+$ ]] || (( port == 0 )); then printf 'running\n'; return 0; fi
-  if port_open "${host:-127.0.0.1}" "$port"; then printf 'running\n'; else printf 'starting\n'; fi
+  # llama.cpp binds the port before the model finishes loading, so an open
+  # port alone is not "ready"; /health separates the two.
+  if ! port_open "$host" "$port"; then printf 'starting\n'; return 0; fi
+  http_health "$host" "$port"
+  case $? in
+    1) printf 'starting\n' ;;
+    *) printf 'running\n' ;;
+  esac
 }
 
 # Last meaningful line of a model's log, for surfacing a failed start.
